@@ -64,5 +64,6 @@ https://github.com/jordanbtucker/dpapick
 https://github.com/GhostPack/SharpDPAPI
 
 # Author
-Lefteris (lefty) Panos / @lefterispan
-Shouts to @eks_perience
+Lefteris (lefty) Panos / @lefterispan / 2023
+
+Shouts to @eks_perience & Nettitude RT
