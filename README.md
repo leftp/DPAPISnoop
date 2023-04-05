@@ -3,8 +3,8 @@ A C# tool to output crackable DPAPI hashes from user MasterKeys.
 
 MasterKeys are encrypted with the domain password of the user. Cracking such a key can lead to the compromise of other domain accounts.
 
-Based on DPAPImk2john at https://github.com/openwall/john/blob/6ed33a7f10f4fa19a4a995cf0fa099d6169fdcbf/run/DPAPImk2john.py
-
+Based on DPAPImk2john for hash generation (https://github.com/openwall/john/blob/6ed33a7f10f4fa19a4a995cf0fa099d6169fdcbf/run/DPAPImk2john.py)
+Based on SharpDPAPI for masterkey extraction (https://github.com/GhostPack/SharpDPAPI)
 # Info
 DPAPISnoop once run, it will iterate through every user folder, grab the most recent MasterKey under `C:\Users\User\AppData\Roaming\Microsoft\Protect\{SID}\{GUID}` and output a hashcat/JtR crackable hash.
 
@@ -43,7 +43,7 @@ DPAPISnoop.exe [\\\\server\\C$]
 
 
 
-# Useful Refereneces
+# Useful References
 www.synacktiv.ninja/ressources/univershell_2017_dpapi.pdf
 
 https://github.com/hashcat/hashcat/pull/1238

@@ -107,7 +107,7 @@ namespace DPAPISnoop
                 var userDirs = Directory.GetDirectories(rootDir + "\\Users");
                 foreach (var dir in userDirs)
                 {
-                    if (dir.EndsWith("Public") || dir.EndsWith("Default") || dir.EndsWith("Default User") || dir.EndsWith("All Users") || dir.Contains(".NET v") || dir.Contains("MSSQL$"))
+                    if (dir.EndsWith("Public") || dir.EndsWith("Default") || dir.EndsWith("Default User") || dir.EndsWith("All Users") || dir.Contains(".NET ") || dir.Contains("MSSQL$"))|| dir.Contains("MSSQLLFD"))
                         continue;
 
                     var userDpapiBasePath = $"{dir}\\AppData\\Roaming\\Microsoft\\Protect\\";
